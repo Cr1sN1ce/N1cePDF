@@ -1,0 +1,5 @@
+# Everything needed to test and package N1cePDF on Windows (installed into .venv-build by build-windows.ps1).
+-r base.txt
+pytest>=8
+pytest-qt>=4.4
+pyinstaller>=6.10,<7
