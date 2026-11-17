@@ -22,7 +22,7 @@ IS_WIN = sys.platform == "win32"
 
 # --- third-party packages that carry native libraries or data PyInstaller must not miss -------------
 datas, binaries, hiddenimports = [], [], []
-for pkg in ("pikepdf", "pypdfium2", "pypdfium2_raw"):          # qpdf / PDFium binaries + version data
+for pkg in ("pikepdf", "pypdfium2", "pypdfium2_raw", "cv2", "numpy"):          # qpdf / PDFium binaries + version data
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
@@ -31,7 +31,7 @@ datas += collect_data_files("reportlab")                        # ReportLab's ow
 hiddenimports += collect_submodules("n1cepdf")                  # includes lazily imported modules
 hiddenimports += ["lxml.etree", "lxml._elementpath", "PySide6.QtSvg"]
 
-binaries += sibling_libs(["pikepdf", "Pillow"])                 # pikepdf.libs / pillow.libs next to the package
+binaries += sibling_libs(["pikepdf", "Pillow", "numpy", "opencv-python-headless"])                 # pikepdf.libs / pillow.libs next to the package
 
 # --- application resources (read at run time through n1cepdf.runtime.resource_path) -----------------
 datas += [(str(ROOT / "assets" / "n1cepdf.png"), "assets"),
@@ -40,7 +40,7 @@ datas += [(str(ROOT / "assets" / "n1cepdf.png"), "assets"),
 # --- licence texts of everything we ship (LGPL/MPL/BSD notices travel with the binaries) ------------
 lic_datas, lic_problems = license_datas(
     ["PySide6", "PySide6_Essentials", "PySide6_Addons", "shiboken6", "pypdfium2", "pikepdf", "reportlab",
-     "Pillow", "lxml", "packaging"])
+     "Pillow", "lxml", "packaging", "numpy", "opencv-python-headless"])
 datas += lic_datas
 for msg in lic_problems:
     print(f"N1cePDF.spec WARNING (licences): {msg}")

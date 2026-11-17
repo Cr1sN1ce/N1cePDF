@@ -63,6 +63,13 @@ def raw_rect(o: EditObject) -> Rect:
     return (min(o.x0, o.x1), min(o.y0, o.y1), max(o.x0, o.x1), max(o.y0, o.y1))
 
 
+def object_bounds(obj: EditObject) -> Rect:
+    """Selection follows the editable box; an OCR mask stays at its original location."""
+    if isinstance(obj, TextBox) and obj.ocr_source is not None:
+        return display_bounds(replace(obj, ocr_source=None), 0.0)
+    return display_bounds(obj, 0.0) if isinstance(obj, (TextBox, ImageBox)) else bbox(obj)
+
+
 class EditController(QObject):
     selection_changed = Signal(object)
     tool_changed = Signal(str)
@@ -173,7 +180,7 @@ class EditController(QObject):
         for o in reversed(self.session.layer.on_page(key)):
             if kinds and not isinstance(o, kinds):
                 continue
-            r = display_bounds(o, 0.0) if isinstance(o, (TextBox, ImageBox)) else bbox(o)
+            r = object_bounds(o)
             if point_in_rect(px, py, r, pad):
                 return o
         return None
@@ -189,6 +196,12 @@ class EditController(QObject):
         self.selection_changed.emit(None)
 
     def select(self, obj: EditObject) -> None:
+        # Objects are immutable snapshots; permission changes may have replaced the value.
+        # Always display the current layer state rather than stale checkbox/text properties.
+        obj = self.session.layer.get(obj.id)
+        if obj is None:
+            self.deselect()
+            return
         self.existing = None
         self.selected_id = obj.id
         self.session.stack.break_merge()
@@ -209,7 +222,7 @@ class EditController(QObject):
                 return
             box_like = isinstance(o, (TextBox, ImageBox, Shape))
             rot = getattr(o, "rotation", 0.0)
-            rect = display_bounds(o, 0.0) if isinstance(o, (TextBox, ImageBox)) else bbox(o)
+            rect = object_bounds(o)
             self.overlay.set_selection(page, rect, resizable=box_like and not rot)
         elif self.existing is not None:
             ex = self.existing
@@ -305,7 +318,7 @@ class EditController(QObject):
         rect, resizable, sel_page = None, False, None
         if sel is not None:
             sel_page = self.tab.doc.index_of_key(sel.page_key)
-            rect = display_bounds(sel, 0.0) if isinstance(sel, (TextBox, ImageBox)) else bbox(sel)
+            rect = object_bounds(sel)
             resizable = isinstance(sel, (TextBox, ImageBox, Shape)) and not getattr(sel, "rotation", 0.0)
         elif self.existing is not None:
             sel_page, rect, resizable = self.existing.page, self.existing.rect, self.existing.kind == "image"
@@ -323,7 +336,7 @@ class EditController(QObject):
     def _press_select(self, page, x, y, tr, px, py, e) -> None:
         sel = self.selected_object()
         if sel is not None and self.tab.doc.index_of_key(sel.page_key) == page:
-            rect = display_bounds(sel, 0.0) if isinstance(sel, (TextBox, ImageBox)) else bbox(sel)
+            rect = object_bounds(sel)
             resizable = isinstance(sel, (TextBox, ImageBox, Shape)) and not getattr(sel, "rotation", 0.0)
             h = self.overlay.handle_at(page, rect, x, y) if resizable else None
             if h:
@@ -373,7 +386,7 @@ class EditController(QObject):
     def _refresh_selection_visual_for(self, o: EditObject) -> None:
         page = self.tab.doc.index_of_key(o.page_key)
         if page is not None:
-            rect = display_bounds(o, 0.0) if isinstance(o, (TextBox, ImageBox)) else bbox(o)
+            rect = object_bounds(o)
             self.overlay.set_selection(page, rect, resizable=isinstance(o, (TextBox, ImageBox, Shape))
                                        and not getattr(o, "rotation", 0.0))
 
@@ -692,6 +705,36 @@ class EditController(QObject):
             setattr(self.options, name, value)
 
     def on_action(self, action: str) -> None:
+        if action in ("split_ocr","merge_ocr"):
+            obj=self.selected_object()
+            if not isinstance(obj,TextBox) or obj.ocr_source is None or self.panel is None:
+                return
+            try:
+                if action=="split_ocr":
+                    editor=self.panel.tx_content
+                    prefix=editor.toPlainText().encode("utf-16-le")[:editor.textCursor().position()*2]
+                    position=len(prefix.decode("utf-16-le",errors="ignore"))
+                    children=self.session.split_ocr_block(obj.id,position)
+                    self.select(children[0])
+                else:
+                    candidates=[]
+                    for other in self.session.layer.on_page(obj.page_key):
+                        if not isinstance(other,TextBox) or other.id==obj.id or other.ocr_source is None:
+                            continue
+                        if min(obj.ocr_source[3],other.ocr_source[3])>max(obj.ocr_source[1],other.ocr_source[1]):
+                            candidates.append(other)
+                    candidates.sort(key=lambda other:abs(other.x0-obj.x0))
+                    if not candidates:
+                        raise ValueError("No neighbouring OCR blocks on this row.")
+                    labels=[f"{other.text}  (x={other.x0:.1f} pt)" for other in candidates]
+                    choice,accepted=QInputDialog.getItem(self.tab,"Merge OCR blocks","Neighbour:",labels,0,False)
+                    if not accepted:
+                        return
+                    merged=self.session.merge_ocr_blocks(obj.id,candidates[labels.index(choice)].id)
+                    self.select(merged)
+            except ValueError as exc:
+                self._inform("OCR segmentation",str(exc))
+            return
         if action == "edit_existing_text":
             self.edit_selected_text()
         elif action == "apply_image" and self.existing is not None and self.panel is not None:
@@ -710,6 +753,21 @@ class EditController(QObject):
         o = self.selected_object()
         if o is None:
             return
+        if isinstance(o,TextBox) and o.ocr_source is not None:
+            warning = None
+            if changes.get("ocr_background") == "inpaint" and o.ocr_background != "inpaint":
+                warning = "Local inpainting can alter details and create artifacts. Review the page preview before saving. Changes can be undone. Enable it?"
+            if changes.get("ocr_allow_page_raster") and not self.session.page_raster_allowed(o.page_key):
+                warning = "If local image replacement is unavailable, the affected page will become a raster image. Vector text and graphics on that page lose editability; other pages are preserved. Enable this fallback?"
+            if warning and QMessageBox.question(self.tab,"Scan reconstruction",warning) != QMessageBox.StandardButton.Yes:
+                self.panel.show_object(o)
+                return
+            if "ocr_allow_page_raster" in changes:
+                self.session.set_page_raster_permission(o.page_key,bool(changes["ocr_allow_page_raster"]))
+                changes={name:value for name,value in changes.items() if name!="ocr_allow_page_raster"}
+                o=self.selected_object()
+                if not changes or o is None:
+                    return
         new = self._apply_changes(o, changes)
         if new != o:
             self.session.update_object(new, f"Edit {o.kind}", merge="prop:" + ",".join(sorted(changes)))
@@ -737,7 +795,7 @@ class EditController(QObject):
                 w = (w * nh / h) if isinstance(o, ImageBox) and o.lock_aspect and h and "w" not in geom else w
                 h = nh
             o = with_rect(o, (l, b, l + w, b + h))
-        if isinstance(o, TextBox) and ({"text", "size", "family", "bold", "italic", "line_spacing", "w", "h"} & set(ch)):
+        if isinstance(o, TextBox) and ({"text", "size", "family", "bold", "italic", "line_spacing", "char_spacing", "horizontal_scale", "w", "h"} & set(ch)):
             o = fit_text_box(o, self.session.catalog)
         return o
 
@@ -769,6 +827,8 @@ class EditController(QObject):
         key = self.tab.doc.page_key(page)
         if self._clip is not None:
             o = moved(replace(self._clip, id=new_id(), page_key=key), 12.0, -12.0)
+            if isinstance(o, TextBox) and o.ocr_source is not None:
+                o = replace(o, ocr_source=None, ocr_original=None, ocr_initial_rect=None, origin="new")
             self.session.add_object(o, f"Paste {o.kind}")
             self.select(o)
             return True

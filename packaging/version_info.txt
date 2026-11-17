@@ -3,8 +3,8 @@
 # Keep in sync with n1cepdf/__init__.py and packaging/N1cePDF.iss (tests/unit/test_release.py checks this).
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(1, 1, 0, 0),
+    prodvers=(1, 1, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -19,12 +19,12 @@ VSVersionInfo(
         '040904B0',
         [StringStruct('CompanyName', 'N1cePDF'),
         StringStruct('FileDescription', 'N1cePDF - offline PDF viewer and editor'),
-        StringStruct('FileVersion', '1.0.0.0'),
+        StringStruct('FileVersion', '1.1.0.0'),
         StringStruct('InternalName', 'N1cePDF'),
         StringStruct('LegalCopyright', 'See LICENSE'),
         StringStruct('OriginalFilename', 'N1cePDF.exe'),
         StringStruct('ProductName', 'N1cePDF'),
-        StringStruct('ProductVersion', '1.0.0.0')])
+        StringStruct('ProductVersion', '1.1.0.0')])
       ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]

@@ -5,7 +5,7 @@ import threading
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QSplitter, QWidget
 from ..core.document import PdfDocument
-from ..core.renderer import PageRenderer
+from ..core.renderer import PageRenderer, SearchHit
 from ..edit.session import ChangeEvent, EditSession
 from .document_view import DocumentView
 from .edit_controller import EditController
@@ -126,6 +126,11 @@ class DocumentTab(QSplitter):
             lambda cancel: r.outline(),
             lambda entries: self.sidebar.bookmarks.set_outline(entries) if r is self.renderer else None)
 
+    def start_ocr(self):
+        if self._can_edit():
+            from .ocr_dialog import OcrDialog
+            OcrDialog(self).exec()
+
     # ---- navigation ----------------------------------------------------
     def goto(self, page: int) -> None:
         self.view.go_to_page(page)
@@ -155,7 +160,23 @@ class DocumentTab(QSplitter):
         self.sidebar.search.set_busy()
         self.view.clear_search()
         r, rev = self.renderer, self.doc.revision  # the results are only valid for this state
-        self._search_handle = self._submit(lambda cancel: r.search(text, cancel=cancel),
+        ocr_objects = [(i, o) for i, key in enumerate(self.doc.page_keys())
+                       for o in self.session.layer.on_page(key)
+                       if getattr(o, "ocr_source", None) is not None]
+
+        def search(cancel):
+            hits = r.search(text, cancel=cancel)
+            if text.strip():
+                query = text.casefold()
+                for index, obj in ocr_objects:
+                    if cancel.is_set():
+                        break
+                    if query in obj.text.casefold():
+                        hits.append(SearchHit(index, ((obj.x0, obj.y0, obj.x1, obj.y1),),
+                                              snippets=(obj.text,)))
+            return sorted(hits, key=lambda hit: hit.page)
+
+        self._search_handle = self._submit(search,
                                            lambda hits: self._on_search_done(hits, r, rev),
                                            self._on_search_error)
 
@@ -220,6 +241,7 @@ class DocumentTab(QSplitter):
         if ev.structural:
             self._after_edit(min(self.view.current_page, max(0, self.doc.page_count - 1)))
         else:
+            self.invalidate_search(SEARCH_STALE)
             self.state_changed.emit()
 
     def toggle_properties(self, visible: bool | None = None) -> None:

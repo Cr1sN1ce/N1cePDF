@@ -1,6 +1,6 @@
 @echo off
 rem ---------------------------------------------------------------------------
-rem  N1cePDF 1.0.0 - one-command Windows release build.
+rem  N1cePDF 1.1.0 - one-command Windows release build.
 rem
 rem  Usage:   build-windows.bat [-SkipTests] [-InstallTest] [-Publisher "Name"] [-Python C:\path\python.exe]
 rem

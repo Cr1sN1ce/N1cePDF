@@ -135,6 +135,7 @@ class MainWindow(QMainWindow):
         add("search", "&Search", lambda: self._with_tab(lambda t: t.show_search()), K.Find, "search",
             "Search (Ctrl+F)")
         add("properties", "Document &Properties…", self.show_properties, "Ctrl+D")
+        add("ocr", "Распознать текст (OCR)…", lambda: self._with_tab(lambda t: t.start_ocr()), "Ctrl+Shift+O")
         add("about", "&About N1cePDF", self.show_about, None)
 
     def _make_menus(self) -> None:
@@ -150,7 +151,7 @@ class MainWindow(QMainWindow):
             "&View": ["zoom_in", "zoom_out", "fit_width", "fit_page", "actual", None, "prev", "next",
                       None, "sidebar"],
             "&Document": ["rotate", "insert", "delete", None, "extract", "merge"],
-            "&Tools": ["search", "properties", "properties_panel", None] + ["tool_" + t.id for t in TOOLS],
+            "&Tools": ["ocr", "search", "properties", "properties_panel", None] + ["tool_" + t.id for t in TOOLS],
             "&Help": ["about"],
         }
         self.menus = {}
@@ -275,7 +276,7 @@ class MainWindow(QMainWindow):
         doc_actions = ("save_as", "close", "copy", "select_all", "zoom_in", "zoom_out", "fit_width",
                        "fit_page", "actual", "sidebar", "prev", "next", "rotate", "insert", "delete",
                        "extract", "search", "properties", "page_spin", "page_total", "zoom_combo", "paste",
-                       "delete_selected", "cancel_edit", "properties_panel") + tuple("tool_" + t.id for t in TOOLS)
+                       "delete_selected", "cancel_edit", "properties_panel", "ocr") + tuple("tool_" + t.id for t in TOOLS)
         for n in doc_actions:
             self.act[n].setEnabled(has)
         for n in ("merge", "open", "exit", "about"):
@@ -290,6 +291,7 @@ class MainWindow(QMainWindow):
             self.mod_label.setText("")
             self.welcome.refresh()
             return
+        self.act["ocr"].setEnabled(not t.busy and not t.reloading)
         self.act["save"].setEnabled(t.doc.modified or t.doc.path is None)
         st = t.session.stack
         self.act["undo"].setEnabled(st.can_undo)

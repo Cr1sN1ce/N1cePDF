@@ -18,7 +18,7 @@ import contextlib
 import ctypes
 import io
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import pikepdf
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
@@ -56,6 +56,9 @@ class TextRun:
     baseline: tuple[float, float]  # text origin in PDF space
     native_ok: bool                # standard-14 font, not embedded: eligible for in-place rewrite
     skewed: bool = False
+    char_spacing: float = 0.0
+    horizontal_scale: float = 100.0
+    spacing_known: bool = False
 
 
 @dataclass(frozen=True)
@@ -99,7 +102,32 @@ def _open_page(doc: pdfium.PdfDocument, page_index: int):
 def inspect_page(doc: pdfium.PdfDocument, page_index: int) -> PageContent:
     """List top-level page objects and text runs. `doc` may be an already-open renderer document."""
     with _open_page(doc, page_index) as (_page, _tp, objs):
-        return _inspect(objs, page_index)
+        content = _inspect(objs, page_index)
+    # PDFium has no public character-spacing getter. Read PDF text-state operators and
+    # use them only when their show-text sequence maps unambiguously to inspected runs.
+    out = io.BytesIO()
+    doc.save(out)
+    states = []
+    char_space,hscale = 0.0,100.0
+    stack = []
+    with pikepdf.open(io.BytesIO(out.getvalue())) as pdf:
+        for operands,operator in pikepdf.parse_content_stream(pdf.pages[page_index]):
+            op = str(operator)
+            if op == "q": stack.append((char_space,hscale))
+            elif op == "Q" and stack: char_space,hscale = stack.pop()
+            elif op == "Tc": char_space = float(operands[0])
+            elif op == "Tz": hscale = float(operands[0])
+            elif op == '"':
+                char_space = float(operands[1])
+                states.append((char_space,hscale))
+            elif op in ("Tj","'"):
+                states.append((char_space,hscale))
+            elif op == "TJ":
+                states.extend((char_space,hscale) for part in operands[0] if isinstance(part,pikepdf.String))
+    if len(states) == len(content.runs):
+        content = replace(content,runs=tuple(replace(run,char_spacing=spacing,horizontal_scale=scale,spacing_known=True)
+                           for run,(spacing,scale) in zip(content.runs,states)))
+    return content
 
 
 def _inspect(objs, page_index: int) -> PageContent:

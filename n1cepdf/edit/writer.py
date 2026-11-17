@@ -1,8 +1,8 @@
 """Write edit objects into a pikepdf document as real PDF content.
 
-* text / image / shape  -> vector content merged onto the page (pikepdf add_overlay of a ReportLab page):
-  fonts are embedded TrueType subsets with ToUnicode maps (text stays searchable), JPEGs are not
-  recompressed, nothing is rasterized;
+* ordinary text / image / shape -> PDF content merged through ReportLab overlays;
+* changed OCR -> source image pixels reconstructed by scan_rebuild before other overlays;
+* unchanged OCR -> invisible searchable text;
 * markup / ink / comment -> standard PDF annotations with appearance streams (kept as annotations).
 The same drawing code renders previews, so what the user sees is what gets saved.
 """
@@ -26,24 +26,27 @@ class WriteError(Exception):
 
 
 # ---------------------------------------------------------------- text layout
-def wrap_text(text: str, font: str, size: float, width: float) -> list[str]:
+def wrap_text(text: str, font: str, size: float, width: float,
+              char_spacing: float = 0, horizontal_scale: float = 100) -> list[str]:
+    def measure(value):
+        return (stringWidth(value,font,size)+max(0,len(value)-1)*char_spacing)*horizontal_scale/100
     lines: list[str] = []
     for para in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        if width <= 0 or stringWidth(para, font, size) <= width:
+        if width <= 0 or measure(para) <= width:
             lines.append(para)
             continue
         cur = ""
         for word in para.split(" "):
             cand = word if not cur else cur + " " + word
-            if stringWidth(cand, font, size) <= width:
+            if measure(cand) <= width:
                 cur = cand
                 continue
             if cur:
                 lines.append(cur)
                 cur = ""
-            while stringWidth(word, font, size) > width and len(word) > 1:   # break overlong words
+            while measure(word) > width and len(word) > 1:   # break overlong words
                 k = len(word)
-                while k > 1 and stringWidth(word[:k], font, size) > width:
+                while k > 1 and measure(word[:k]) > width:
                     k -= 1
                 lines.append(word[:k])
                 word = word[k:]
@@ -59,7 +62,7 @@ def text_size_needed(o: TextBox, catalog: FontCatalog | None = None) -> tuple[fl
     if face is None:
         return o.x1 - o.x0, o.y1 - o.y0
     lines = o.text.replace("\r\n", "\n").split("\n")
-    w = max((stringWidth(ln, face.rl_name, o.size) for ln in lines), default=0.0)
+    w = max(((stringWidth(ln, face.rl_name, o.size)+max(0,len(ln)-1)*o.char_spacing)*o.horizontal_scale/100 for ln in lines), default=0.0)
     return w, len(lines) * o.size * o.line_spacing
 
 
@@ -71,6 +74,8 @@ def _alpha(c: canvas.Canvas, a: float) -> None:
 
 
 def _draw_text(c: canvas.Canvas, o: TextBox, cat: FontCatalog, warnings: list[str]) -> None:
+    unchanged_ocr = (o.ocr_source is not None and o.text == o.ocr_original
+                     and (o.x0, o.y0, o.x1, o.y1) == o.ocr_initial_rect)
     face, missing, note = cat.resolve(o.family, o.bold, o.italic, o.text)
     if face is None:
         raise WriteError("No usable font is installed to render this text.")
@@ -83,7 +88,7 @@ def _draw_text(c: canvas.Canvas, o: TextBox, cat: FontCatalog, warnings: list[st
                         "regular weight is used.")
     asc, _desc = metrics(face)
     width = o.x1 - o.x0
-    lines = wrap_text(o.text, face.rl_name, o.size, width)
+    lines = [o.text] if unchanged_ocr else wrap_text(o.text, face.rl_name, o.size, width, o.char_spacing, o.horizontal_scale)
     c.saveState()
     _alpha(c, o.opacity)
     if o.rotation:
@@ -95,9 +100,22 @@ def _draw_text(c: canvas.Canvas, o: TextBox, cat: FontCatalog, warnings: list[st
     c.setFont(face.rl_name, o.size)
     y = o.y1 - asc * o.size
     for ln in lines:
-        w = stringWidth(ln, face.rl_name, o.size)
+        w = (stringWidth(ln, face.rl_name, o.size)+max(0,len(ln)-1)*o.char_spacing)*o.horizontal_scale/100
         x = o.x0 if o.align == "left" else (o.x0 + (width - w) / 2 if o.align == "center" else o.x1 - w)
-        c.drawString(x, y, ln)
+        if unchanged_ocr:
+            text = c.beginText(x, y)
+            text.setTextRenderMode(3)
+            text.setCharSpace(o.char_spacing)
+            if w > 0:
+                text.setHorizScale(max(1, o.horizontal_scale * width / w))
+            text.textOut(ln)
+            c.drawText(text)
+        else:
+            text = c.beginText(x,y)
+            text.setCharSpace(o.char_spacing)
+            text.setHorizScale(o.horizontal_scale)
+            text.textOut(ln)
+            c.drawText(text)
         y -= o.size * o.line_spacing
     c.restoreState()
 
@@ -281,8 +299,18 @@ def apply_layer(pdf: pikepdf.Pdf, by_page: dict[int, list[EditObject]],
         if not (0 <= index < len(pdf.pages)):
             continue
         page = pdf.pages[index]
+        from .scan_rebuild import changed, rebuild_page
+        scan_edits = [o for o in objs if isinstance(o, TextBox) and changed(o)]
+        if scan_edits:
+            page_permission=any(isinstance(o,TextBox) and o.ocr_source is not None and o.ocr_allow_page_raster for o in objs)
+            warnings += rebuild_page(pdf,index,scan_edits,cat,allow_page_raster=page_permission)
+            objs = [o for o in objs if o not in scan_edits]
+        # Persist only live overlays over the reconstructed raster. Never restore old scan pixels.
+        if any(isinstance(o, TextBox) and o.ocr_source is not None for o in objs):
+            from .ocr_state import store_page
+            store_page(pdf, page, objs)
         content = [o for o in objs if isinstance(o, (TextBox, ImageBox, Shape))]
-        if any(isinstance(o, TextBox) and o.text.strip() for o in content) or any(
+        if any(isinstance(o, TextBox) and (o.text.strip() or o.ocr_source is not None) for o in content) or any(
                 not isinstance(o, TextBox) for o in content):
             mb = [float(v) for v in page.mediabox]
             box = (min(mb[0], mb[2]), min(mb[1], mb[3]), max(mb[0], mb[2]), max(mb[1], mb[3]))
@@ -308,7 +336,7 @@ def fit_text_box(o: TextBox, catalog: FontCatalog | None = None) -> TextBox:
     face, _m, _n = cat.resolve(o.family, o.bold, o.italic, o.text)
     if face is None:
         return o
-    lines = wrap_text(o.text, face.rl_name, o.size, o.x1 - o.x0)
+    lines = wrap_text(o.text, face.rl_name, o.size, o.x1 - o.x0, o.char_spacing, o.horizontal_scale)
     need = max(1, len(lines)) * o.size * o.line_spacing + o.size * 0.25
     if (o.y1 - o.y0) >= need:
         return o

@@ -134,8 +134,8 @@ def test_version_is_consistent_everywhere():
     iss = (ROOT / "packaging" / "N1cePDF.iss").read_text("utf-8")
     iss_ver = re.search(r'#define\s+AppVersion\s+"([^"]+)"', iss).group(1)
     vi = (ROOT / "packaging" / "version_info.txt").read_text("utf-8")
-    assert n1cepdf.__version__ == py == iss_ver == "1.0.0"
-    assert "filevers=(1, 0, 0, 0)" in vi and "'1.0.0.0'" in vi
+    assert n1cepdf.__version__ == py == iss_ver == "1.1.0"
+    assert "filevers=(1, 1, 0, 0)" in vi and "'1.1.0.0'" in vi
 
 
 def test_icon_has_all_standard_sizes():

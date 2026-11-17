@@ -1,4 +1,4 @@
-# Third-party notices (1.0.0 — complete before public redistribution)
+# Third-party notices (1.1.0 — complete before public redistribution)
 
 N1cePDF's Windows build bundles the components below. The build copies the licence files found in each package's
 installed metadata to `licenses/<package>/` inside the application folder (`_internal\licenses`). Licence
@@ -17,4 +17,7 @@ identifiers are from upstream metadata and should be re-verified at release time
 | PyInstaller bootloader | build tool output | GPL-2.0 with bootloader exception | the exception allows distributing the built application under its own terms |
 | Inno Setup | installer | Inno Setup License | build tool only |
 
-Excluded by design: PyMuPDF/MuPDF (AGPL), Ghostscript (AGPL). OCR (Tesseract/OCRmyPDF) is not part of the 1.0.0 build.
+Excluded by design: PyMuPDF/MuPDF (AGPL), Ghostscript (AGPL). Tesseract is an optional external executable and is not redistributed with N1cePDF. OCRmyPDF is not used.
+
+Visual font matching and reconstruction use NumPy and opencv-python-headless. Include their
+installed distribution licence texts when packaging; PyInstaller licence collection includes both.

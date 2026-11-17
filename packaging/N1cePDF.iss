@@ -7,11 +7,11 @@
 ;      /DAppPublisher="Your Name or Company"   publisher shown in Settings > Installed apps
 ;      /DWithLicensePage                        show a licence page (use once LICENSE is final text)
 ;
-;  Output: ..\release\N1cePDF-Setup-1.0.0-x64.exe
+;  Output: ..\release\N1cePDF-Setup-1.1.0-x64.exe
 ; ===========================================================================
 
 #define AppName      "N1cePDF"
-#define AppVersion   "1.0.0"
+#define AppVersion   "1.1.0"
 #define AppExeName   "N1cePDF.exe"
 #define AppGuid      "{{E2E2DFF2-7F7E-450D-A602-53E414E1F1EA}"
 ; Must equal n1cepdf.runtime.APP_USER_MODEL_ID so shortcuts and the running window share one taskbar button.

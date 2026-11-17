@@ -22,5 +22,7 @@ could not be executed there (no PySide6, no network). Run `pytest` on your machi
 | Rotate / insert / delete page, extract pages, merge PDFs, properties | Written, unverified |
 | pytest-qt suite (40 GUI test cases incl. search-invalidation, stale-callback and close-confirmation regressions) | User-reported on Windows 11: the 2 earlier failures now pass; teardown ERROR fixed in the second bugfix (unverified until re-run); the rest not yet confirmed |
 | Undo / Redo | Disabled in UI (Phase 2) |
-| Encrypt/decrypt UI, OCR, annotations, add text/image, redaction | Not started |
+| Encrypt/decrypt UI, redaction | Not started |
 | Packaging, Windows | Not started / untested |
+
+OCR, editable scan overlays and pending OCR search are implemented in v1.1.0; see README.md.

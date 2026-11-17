@@ -46,6 +46,15 @@ class TextEditDialog(QDialog):
         self.spacing.setSingleStep(0.1)
         self.spacing.setValue(base.line_spacing)
         form.addRow("Line spacing", self.spacing)
+        self.char_spacing = QDoubleSpinBox()
+        self.char_spacing.setRange(-30,100)
+        self.char_spacing.setDecimals(2)
+        self.char_spacing.setValue(base.char_spacing)
+        form.addRow("Letter spacing",self.char_spacing)
+        self.horizontal_scale = QDoubleSpinBox()
+        self.horizontal_scale.setRange(25,400)
+        self.horizontal_scale.setValue(base.horizontal_scale)
+        form.addRow("Text width (%)",self.horizontal_scale)
         note = QLabel("Changing only the words keeps the original font when it is a standard font. Any style "
                       "change uses remove-and-replace with an embedded font. You will see a preview first.")
         note.setWordWrap(True)
@@ -60,7 +69,8 @@ class TextEditDialog(QDialog):
     def result_values(self) -> tuple[str, TextStyle]:
         style = TextStyle(self.family.currentText(), round(self.size.value(), 2), self.bold.isChecked(),
                           self.italic.isChecked(), tuple(round(c, 3) for c in (self.color.color() or (0, 0, 0))),
-                          self.align.currentText(), round(self.spacing.value(), 2))
+                          self.align.currentText(), round(self.spacing.value(), 2),
+                          self.char_spacing.value(),self.horizontal_scale.value())
         return self.content.toPlainText(), style
 
 

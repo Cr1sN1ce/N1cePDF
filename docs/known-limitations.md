@@ -1,10 +1,10 @@
 # Known limitations
-- **The author cannot run Qt.** PySide6/pytest/pytest-qt are not installable in the authoring sandbox. Only the Qt-free core is executed there (26 unit tests, plain-Python runner). GUI results come from the user's Windows 11 runs; fixes made after those runs are unverified until re-run (see CHANGES.md).
+- v1.1.0 has automated Qt/offscreen and core test coverage on Linux; interactive Windows/Fedora desktop and installer validation remain release checks. Earlier test history is recorded in CHANGES.md.
 - **Qt warnings** `QFontDatabase: Cannot find font directory …/PySide6/lib/fonts` and `This plugin does not support propagateSizeHints()` are emitted by Qt's `offscreen` platform plugin (the tests' default). They are expected to be harmless (Qt falls back to system fonts) but this was not verified here. Run `set QT_QPA_PLATFORM=windows` to use the native plugin instead.
 - Empty-window cause: the previous central widget was an empty `QTabWidget`, so nothing was shown without a document (certain from the code). The invisible menu bar could not be reproduced here; the fix is defensive (in-window non-native menu bar, removal of six empty placeholder menus, palette theme instead of a global stylesheet). Please confirm on Fedora KDE/Wayland.
 - Text selection works within one page per drag; Select All spans the document. No double/triple-click word/line selection.
 - Selection and highlights use pdfium geometry; ligatures and complex scripts may select slightly different character spans.
-- Page operations (rotate/insert/delete) have no undo until Phase 2. The file on disk is unchanged until Save (confirmed) or Save As.
+- Page operations (rotate/insert/delete) support undo/redo. The file on disk is unchanged until Save or Save As.
 - Saving an encrypted document always writes an unencrypted copy (after confirmation); re-encryption is Phase 2.
 - Rendering snapshots re-serialize the whole document after an edit (background thread); fine for typical files, slow for very large ones.
 - HiDPI: bitmaps render at devicePixelRatio; fractional-scale behavior on Wayland is untested.
@@ -16,7 +16,7 @@
 - **PDFium regenerates the whole content stream of every page whose existing text/image is edited.** Visual output is preserved, but marked-content/optional-content/tagged-PDF structure on that page may be flattened.
 - Editing granularity is the PDF text object (a run/line). A single word inside a run is edited by editing the run; paragraphs are not reflowed.
 - Only non-embedded standard-14 fonts are rewritten in place. Everything else uses remove-and-replace with a *different* embedded font (the preview says so). Rotated/skewed text can only be edited in place.
-- Text inside Form XObjects, outlined text and scanned text cannot be edited (reported to the user).
+- Native text inside Form XObjects and outlined text cannot be directly edited. Scanned text supports OCR and white-mask editing in v1.1.0.
 - Object removal is not certified redaction: metadata, XMP, other pages and embedded files are untouched; secure redaction remains a later phase.
 - Annotations already present in an opened file are not loaded into the editable layer.
 - A process-wide PDFium lock serialises rendering, previews and edit planning; heavy planning briefly pauses background rendering.
@@ -31,3 +31,34 @@
 - "Open with" registration is optional and never sets the default PDF app (Windows protects that choice).
 - `LICENSE` is a placeholder; PDFium's licence text must be added to `THIRD_PARTY_NOTICES.md` before public redistribution.
 - A document must have a covering TrueType font installed for Cyrillic/Romanian text edits (Arial/Segoe UI on Windows are used); fonts are not bundled.
+
+
+## 1.1.0 OCR and visual quality
+
+- Font matching, spacing and baseline reconstruction are approximate. The installed TrueType
+  catalog is ranked by aspect metrics, then up to 96 candidate faces are compared visually.
+  CFF/Type1/TTC/variable font reuse and embedded subsets with missing Unicode mappings can fall back.
+- Adaptive segmentation cannot resolve every justified paragraph, compact table or unusual layout.
+  Original word coordinates support manual split/merge at word boundaries before editing.
+  Legacy state without word data can be replaced through the OCR dialog; edited blocks are retained.
+- Only adjacent, non-overlapping OCR blocks on the same row can be manually merged. The selected
+  block supplies the merged style. Mixed fonts can need manual corrections or a fresh segmented OCR.
+- Solid backgrounds use local sampled colour; complex backgrounds require inpainting opt-in.
+  Inpainting is approximate and can damage details. Dense/large regions are refused. Undo is
+  available before saving. This is not secure redaction; other metadata remains in the document.
+- Direct image replacement supports unique, positive, axis-aligned Image XObjects without masks
+  or clipping. Other placements need explicit affected-page rasterization, which loses vectors on
+  that page. Rasterization is bounded at 100 megapixels and refuses rather than reducing resolution.
+- Edited JPEG scans are stored losslessly after decoding; size can increase. Bilevel scans promote
+  for antialiasing/colour. Complex image formats/colour spaces can need conversion or be refused.
+- After saving, changed OCR objects are committed into pixels; rerun OCR for further text editing.
+  Unchanged OCR remains searchable. Edited OCR is not given a separate searchable text layer.
+- Private state retains unmodified overlay objects with word geometry against reconstructed base
+  pixels. Other PDF editors can make this state stale by modifying the saved appearance.
+- Browse character selection addresses native PDF text. OCR block selection uses Edit Text/Select.
+- Tesseract and language packs remain external optional dependencies. Rendering itself cannot be
+  interrupted mid-render; Tesseract and font matching are cancellable.
+- Settled preview uses export rendering at the current device scale. While an asynchronous update
+  is pending, an older frame can briefly remain; source image resolution still limits scan sharpness.
+- Automated Qt/offscreen tests run on Linux; Windows installers and interactive native desktop
+  validation remain release checks.

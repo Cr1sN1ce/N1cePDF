@@ -68,7 +68,10 @@ def save_atomic(doc: PdfDocument, dest: str | Path, *, allow_decrypt: bool = Fal
     except OSError as e:           # disk full, path too long, network share dropped, ...
         raise SaveValidationError(f"Could not write the file: {e.strerror or type(e).__name__}.") from e
     except Exception as e:  # noqa: BLE001
-        raise SaveValidationError(f"Could not write output: {type(e).__name__}") from e
+        from ..edit.scan_rebuild import ReconstructionError
+        if isinstance(e,ReconstructionError):
+            raise SaveValidationError(str(e)) from e
+        raise SaveValidationError(f"Could not write output: {type(e).__name__}: {e}") from e
     finally:
         tmp.unlink(missing_ok=True)
     return dest

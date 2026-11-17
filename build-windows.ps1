@@ -23,7 +23,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $Root = $PSScriptRoot
-$Version = '1.0.0'
+$Version = '1.1.0'
 $Total = 8
 
 function Step([int]$n, [string]$msg) { Write-Host ""; Write-Host "[$n/$Total] $msg" -ForegroundColor Cyan }

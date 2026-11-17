@@ -2,10 +2,10 @@
 selected object. All coordinates are PDF user-space points (origin bottom-left of the unrotated page)."""
 from __future__ import annotations
 from dataclasses import dataclass, field
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtGui import QColor, QTextCursor
 from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFormLayout, QLabel,
-                               QPlainTextEdit, QPushButton, QStackedWidget, QVBoxLayout, QWidget)
+                               QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 from ..edit.objects import Comment, EditObject, ImageBox, Ink, Markup, Shape, TextBox
 from .edit_tools import SHAPE_KINDS, TOOL_BY_ID
 
@@ -86,12 +86,16 @@ class PropertiesPanel(QWidget):
         super().__init__(parent)
         self.setMinimumWidth(230)
         self._loading = False
+        self._object_id: str | None = None
         self.title = QLabel("Properties")
         self.title.setStyleSheet("font-weight: 600;")
         self.stack = QStackedWidget()
         lay = QVBoxLayout(self)
         lay.addWidget(self.title)
-        lay.addWidget(self.stack, 1)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setWidget(self.stack)
+        lay.addWidget(self.scroll, 1)
         self.families: list[str] = []
 
         self.page_tool = self._build_tool_page()
@@ -217,6 +221,30 @@ class PropertiesPanel(QWidget):
         self.tx_opacity = _spin(5, 100, 5, 0, " %")
         self.tx_opacity.valueChanged.connect(lambda v: self._emit(opacity=v / 100.0))
         f.addRow("Opacity", self.tx_opacity)
+        self.tx_char_spacing = _spin(-30,100,0.1,2," pt")
+        self.tx_char_spacing.valueChanged.connect(lambda v: self._emit(char_spacing=v))
+        f.addRow("Letter spacing",self.tx_char_spacing)
+        self.tx_horizontal_scale = _spin(25,400,1,1," %")
+        self.tx_horizontal_scale.valueChanged.connect(lambda v: self._emit(horizontal_scale=v))
+        f.addRow("Text width",self.tx_horizontal_scale)
+        self.tx_ocr_background = QComboBox()
+        self.tx_ocr_background.addItem("Auto: solid background only","auto")
+        self.tx_ocr_background.addItem("Local inpainting (review artifacts)","inpaint")
+        self.tx_ocr_background.currentIndexChanged.connect(
+            lambda _: self._emit(ocr_background=self.tx_ocr_background.currentData()))
+        f.addRow("Scan background",self.tx_ocr_background)
+        self.tx_page_raster = QCheckBox("Allow affected-page rasterization")
+        self.tx_page_raster.setToolTip("Page-wide permission: applies to all OCR blocks on this page. Clearing it revokes the fallback for the whole page.")
+        self.tx_page_raster.toggled.connect(lambda v: self._emit(ocr_allow_page_raster=v))
+        f.addRow(self.tx_page_raster)
+        self.tx_split_ocr = QPushButton("Split OCR block at cursor")
+        self.tx_split_ocr.setToolTip("Place the caret between words. Legacy OCR without word positions can be replaced using the OCR dialog checkbox.")
+        self.tx_split_ocr.clicked.connect(lambda: self.action_requested.emit("split_ocr"))
+        f.addRow(self.tx_split_ocr)
+        self.tx_merge_ocr = QPushButton("Merge neighbouring OCR blocks…")
+        self.tx_merge_ocr.clicked.connect(lambda: self.action_requested.emit("merge_ocr"))
+        f.addRow(self.tx_merge_ocr)
+        self._text_form = f
         self.tx_geom = self._geom_rows(f)
         return w
 
@@ -308,6 +336,7 @@ class PropertiesPanel(QWidget):
 
     # ------------------------------------------------------------ public API
     def show_tool_options(self, tool_id: str, o: ToolOptions) -> None:
+        self._object_id = None
         self._loading = True
         try:
             t = TOOL_BY_ID[tool_id]
@@ -341,13 +370,38 @@ class PropertiesPanel(QWidget):
         for w_, v in zip(widgets, (l, b, r - l, t - b)):
             w_.setValue(v)
 
+    @staticmethod
+    def _sync_text(editor: QPlainTextEdit, text: str, same_object: bool) -> None:
+        # Model notifications are synchronous with textChanged. Replacing identical text
+        # here resets the active cursor, selection, IME state and the editor's undo stack.
+        if same_object and editor.toPlainText() == text:
+            return
+        cursor = editor.textCursor()
+        position, anchor = cursor.position(), cursor.anchor()
+        vertical = editor.verticalScrollBar().value()
+        horizontal = editor.horizontalScrollBar().value()
+        with QSignalBlocker(editor):
+            editor.setPlainText(text)
+            if same_object:
+                # External changes (e.g. document undo) may shorten the text. Qt cursor
+                # positions count UTF-16 code units, so use the document's character count.
+                end = editor.document().characterCount() - 1
+                cursor = editor.textCursor()
+                cursor.setPosition(min(anchor, end))
+                cursor.setPosition(min(position, end), QTextCursor.MoveMode.KeepAnchor)
+                editor.setTextCursor(cursor)
+                editor.verticalScrollBar().setValue(vertical)
+                editor.horizontalScrollBar().setValue(horizontal)
+
     def show_object(self, o: EditObject) -> None:
+        same_object = self._object_id == o.id
+        self._object_id = o.id
         self._loading = True
         try:
             self.title.setText({"text": "Text", "image": "Image", "shape": "Shape", "markup": "Markup",
                                 "comment": "Comment", "ink": "Drawing"}[o.kind])
             if isinstance(o, TextBox):
-                self.tx_content.setPlainText(o.text)
+                self._sync_text(self.tx_content, o.text, same_object)
                 self.tx_family.setCurrentText(o.family)
                 self.tx_size.setValue(o.size)
                 self.tx_bold.setChecked(o.bold)
@@ -357,6 +411,16 @@ class PropertiesPanel(QWidget):
                 self.tx_spacing.setValue(o.line_spacing)
                 self.tx_rotation.setValue(o.rotation)
                 self.tx_opacity.setValue(o.opacity * 100)
+                self.tx_char_spacing.setValue(o.char_spacing)
+                self.tx_horizontal_scale.setValue(o.horizontal_scale)
+                self.tx_ocr_background.setCurrentIndex(max(0,self.tx_ocr_background.findData(o.ocr_background)))
+                self.tx_page_raster.setChecked(o.ocr_allow_page_raster)
+                self._text_form.setRowVisible(self.tx_ocr_background,o.ocr_source is not None)
+                self._text_form.setRowVisible(self.tx_page_raster,o.ocr_source is not None)
+                self._text_form.setRowVisible(self.tx_split_ocr,o.ocr_source is not None)
+                self._text_form.setRowVisible(self.tx_merge_ocr,o.ocr_source is not None)
+                self.tx_split_ocr.setEnabled(len(o.ocr_words)>1)
+                self.tx_merge_ocr.setEnabled(bool(o.ocr_words))
                 self._set_geom(self.tx_geom, (min(o.x0, o.x1), min(o.y0, o.y1), max(o.x0, o.x1), max(o.y0, o.y1)))
                 self.stack.setCurrentWidget(self.page_text)
             elif isinstance(o, ImageBox):
@@ -380,7 +444,7 @@ class PropertiesPanel(QWidget):
                 if is_ink:
                     self.sm_width.setValue(o.width)
                 if is_note:
-                    self.sm_text.setPlainText(o.text)
+                    self._sync_text(self.sm_text, o.text, same_object)
                 self._simple_form.setRowVisible(self.sm_opacity, not is_note)
                 self._simple_form.setRowVisible(self.sm_width, is_ink)
                 self._simple_form.setRowVisible(self.sm_text, is_note)
@@ -389,6 +453,7 @@ class PropertiesPanel(QWidget):
             self._loading = False
 
     def show_existing_text(self, text: str, font: str, size: float, native: bool) -> None:
+        self._object_id = None
         self.title.setText("Existing text")
         self.ex_text.setText(text)
         self.ex_font.setText(f"{font}, {size:.1f} pt")
@@ -397,6 +462,7 @@ class PropertiesPanel(QWidget):
         self.stack.setCurrentWidget(self.page_ex_text)
 
     def show_existing_image(self, rect: tuple[float, float, float, float]) -> None:
+        self._object_id = None
         self._loading = True
         try:
             self.title.setText("Existing image")

@@ -90,6 +90,8 @@ def metrics(face: FontFace) -> tuple[float, float]:
 def register(face: FontFace) -> str:
     """Register with ReportLab (idempotent); returns its font name. Raises TTFError if not embeddable."""
     if face.rl_name not in pdfmetrics.getRegisteredFontNames():
+        if not embedding_allowed(face.path.read_bytes()):
+            raise TTFError("Font embedding/subsetting is restricted by OS/2 fsType")
         pdfmetrics.registerFont(TTFont(face.rl_name, str(face.path)))
     return face.rl_name
 
@@ -126,10 +128,18 @@ def _scan() -> list[FontFace]:
             if p.is_file():
                 faces[p] = FontFace(fam, "bold" in st, "italic" in st or "oblique" in st, p)
     if not faces:
+        from PIL import ImageFont
+        known = {name.lower():value for name,value in _KNOWN.items()}
         for d in _font_dirs():
-            for name, (fam, b, i) in _KNOWN.items():
-                for hit in d.rglob(name):
-                    faces[hit] = FontFace(fam, b, i, hit)
+            for hit in d.rglob("*.ttf"):
+                info = known.get(hit.name.lower())
+                if info is None:
+                    try:
+                        family,style = ImageFont.truetype(str(hit),12).getname()
+                        info = (family,"bold" in style.lower(),any(v in style.lower() for v in ("italic","oblique")))
+                    except (OSError,ValueError):
+                        continue
+                faces[hit] = FontFace(*info,hit)
     return list(faces.values())
 
 
@@ -191,6 +201,14 @@ def default_catalog() -> FontCatalog:
 def guess_family(pdf_font_name: str) -> tuple[str, bool, bool]:
     """Map a PDF BaseFont name (e.g. 'ABCDEF+TimesNewRomanPS-BoldMT') to (family, bold, italic)."""
     name = pdf_font_name.split("+", 1)[-1]
+    import re
+    normalized = lambda value: re.sub(r"[^a-z0-9]","",value.lower())
+    # Prefer the actual installed/embedded family over a generic sans/serif alias.
+    catalog = default_catalog()
+    for family in sorted(catalog.families(),key=len,reverse=True):
+        if normalized(pdf_font_name) == normalized(family) or normalized(name).startswith(normalized(family)):
+            low = name.lower()
+            return family, any(v in low for v in ('bold','black','heavy')), any(v in low for v in ('italic','oblique'))
     low = name.lower()
     bold = "bold" in low or "black" in low or "heavy" in low
     italic = "italic" in low or "oblique" in low
@@ -202,3 +220,53 @@ def guess_family(pdf_font_name: str) -> tuple[str, bool, bool]:
     else:
         fam = "Liberation Sans"
     return fam, bold, italic
+
+
+def embedding_allowed(data: bytes) -> bool:
+    """Respect OS/2 fsType restrictions before attempting embedded TTF reuse."""
+    import struct
+    try:
+        count = struct.unpack_from('>H',data,4)[0]
+        for i in range(count):
+            tag,_,offset,length = struct.unpack_from('>4sIII',data,12+i*16)
+            if tag == b'OS/2':
+                flags = struct.unpack_from('>H',data,offset+8)[0]
+                return not bool(flags & (0x0002|0x0100|0x0200))
+        return False  # no explicit permission information: conservative fallback
+    except (struct.error,ValueError):
+        return False
+
+
+def import_embedded_fonts(catalog, pdf):
+    """Load usable embedded TrueType fonts; reject restricted fonts and broken subsets."""
+    import tempfile
+    import pikepdf
+    if not hasattr(catalog,'_embedded_directory'):
+        catalog._embedded_directory = tempfile.TemporaryDirectory(prefix='n1cepdf-fonts-')
+    for page in pdf.pages:
+        for _,font in page.get('/Resources',{}).get('/Font',{}).items():
+            candidates = list(font.get('/DescendantFonts',[])) or [font]
+            for candidate in candidates:
+                descriptor = candidate.get('/FontDescriptor')
+                stream = descriptor.get('/FontFile2') if descriptor is not None else None
+                if stream is None:
+                    continue
+                try:
+                    data = stream.read_bytes()
+                except (pikepdf.PdfError,ValueError,TypeError):
+                    continue
+                if not embedding_allowed(data):
+                    continue
+                digest = hashlib.sha256(data).hexdigest()
+                path = Path(catalog._embedded_directory.name)/(digest+'.ttf')
+                if not path.exists(): path.write_bytes(data)
+                family = str(font.get('/BaseFont','Embedded')).lstrip('/')
+                if any(face.family == family for face in catalog.faces):
+                    continue
+                probe = _ttf(path)
+                if probe is not None:
+                    _,bold,italic = guess_family(family)
+                    face = FontFace(family,bold,italic,path)
+                    try: register(face)
+                    except (TTFError,OSError): continue
+                    catalog.faces.append(face)

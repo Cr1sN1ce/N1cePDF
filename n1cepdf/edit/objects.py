@@ -32,6 +32,15 @@ class TextBox:
     origin: str = "new"           # "new" | "replacement" (replaces removed original text)
     id: str = field(default_factory=new_id)
     kind: str = "text"
+    ocr_source: tuple[float, float, float, float] | None = None
+    ocr_original: str | None = None
+    ocr_initial_rect: tuple[float, float, float, float] | None = None
+    char_spacing: float = 0.0
+    horizontal_scale: float = 100.0
+    ocr_background: str = "auto"  # auto (solid only) | inpaint (explicit consent)
+    ocr_allow_page_raster: bool = False
+    ocr_words: tuple[tuple[str, tuple[float,float,float,float]], ...] = ()
+    ocr_regions: tuple[tuple[float,float,float,float], ...] = ()
 
 
 @dataclass(frozen=True)

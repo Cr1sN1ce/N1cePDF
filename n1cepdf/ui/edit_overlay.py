@@ -34,6 +34,7 @@ class _Entry:
     pix: QGraphicsPixmapItem | None = None
     pix_logical_w: float = 0.0
     scale_key: float | None = None
+    context_key: object = None
     rendered: EditObject | None = None   # the object value the current bitmap was rendered for
 
 
@@ -47,6 +48,7 @@ class EditOverlay:
         self._temp: list = []
         self._sel_rect: tuple = (None, None, False, False)
         self._warned: set[str] = set()
+        self._inflight: set[str] = set()
         self._rerender = QTimer(tab)
         self._rerender.setSingleShot(True)
         self._rerender.setInterval(150)
@@ -99,7 +101,8 @@ class EditOverlay:
                 if e.obj != obj:
                     e.obj = obj
                     self._layout(e)
-                if isinstance(obj, (TextBox, ImageBox)) and e.rendered != obj:
+                if isinstance(obj, (TextBox, ImageBox)) and (e.rendered != obj or
+                        e.context_key != self._context(obj,idx)):
                     self._request_preview(e)      # bitmap is stale (content/size changed): exact re-render
 
     def _destroy(self, oid: str) -> None:
@@ -123,7 +126,7 @@ class EditOverlay:
         o = e.obj
         if isinstance(o, (TextBox, ImageBox)):
             e.pix = QGraphicsPixmapItem(parent)
-            e.pix.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+            e.pix.setTransformationMode(Qt.TransformationMode.FastTransformation)
             e.pix.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             e.items = [e.pix]
         elif isinstance(o, (Shape, Ink)):
@@ -157,7 +160,9 @@ class EditOverlay:
                 x, y, w, h = tr.rect_to_px(display_bounds(o))
                 e.pix.setPos(x, y)
                 if e.pix_logical_w > 0:
-                    e.pix.setScale(w / e.pix_logical_w)
+                    # Rendered bitmaps already have the correct device-pixel size. Scaling
+                    # again to fit ceil-rounded PDFium dimensions resamples every glyph.
+                    e.pix.setScale(1.0)
             elif isinstance(o, Shape):
                 self._style_shape(e.items[0], o, tr)
             elif isinstance(o, Ink):
@@ -228,18 +233,61 @@ class EditOverlay:
             if isinstance(e.obj, (TextBox, ImageBox)):
                 self._request_preview(e)
 
+    def _context(self,obj,page):
+        from ..edit.scan_rebuild import changed
+        if isinstance(obj,TextBox) and changed(obj):
+            edits = tuple(o for o in self.tab.session.layer.on_page(obj.page_key)
+                          if isinstance(o,TextBox) and changed(o))
+            return (edits,self.tab.doc.revision,self.tab.session.page_raster_allowed(obj.page_key))
+        return None
+
     def _request_preview(self, e: _Entry) -> None:
         obj, page = e.obj, e.page
         rot = self.tab.doc.page_rotation(page)
         scale = self.view.render_scale()
-        key = (obj, rot, scale)
+        context = self._context(obj,page)
+        key = (obj, rot, scale, context)
+        if obj.id in self._inflight:
+            return
         if key in self._cache:
             self._apply_preview(e.obj.id, key, self._cache[key])
             return
         cat = self.tab.session.catalog
-        self.tab.submit(lambda cancel: render_preview(obj, rot, scale, cat)[:4],
-                        lambda res: self._preview_done(obj.id, key, res),
-                        lambda err: self.tab.message.emit(f"Preview failed: {type(err).__name__}"))
+        self._inflight.add(obj.id)
+
+        def work(cancel):
+            from ..edit.scan_rebuild import changed
+            data = None
+            if isinstance(obj,TextBox) and changed(obj):
+                with self.tab.doc_lock:
+                    data = self.tab.doc.snapshot_bytes()
+            return render_preview(obj,rot,scale,cat,data,page,context[0] if context else None,
+                                  context[2] if context else None)
+
+        def done(result):
+            self._inflight.discard(obj.id)
+            self._preview_done(obj.id,key,result)
+            current = self.entries.get(obj.id)
+            if current is not None and (current.obj != obj or self.view.render_scale() != scale or
+                                        self._context(current.obj,current.page) != context):
+                self._request_preview(current)
+
+        def failed(err):
+            self._inflight.discard(obj.id)
+            current = self.entries.get(obj.id)
+            if current is None:
+                return
+            if (current.obj != obj or self.view.render_scale() != scale or
+                    self._context(current.obj,current.page) != context):
+                # A denied preview may finish after permission was granted. Its old error
+                # must not clear the new preview or tell the user to enable an active setting.
+                self._request_preview(current)
+                return
+            self.tab.message.emit(f"Preview: {err}")
+            if current.pix is not None:
+                current.pix.setPixmap(QPixmap())
+
+        self.tab.submit(work,done,failed)
 
     def _preview_done(self, oid: str, key: tuple, res) -> None:
         w, h, rgba, warnings = res
@@ -254,7 +302,8 @@ class EditOverlay:
 
     def _apply_preview(self, oid: str, key: tuple, bitmap: tuple[int, int, bytes]) -> None:
         e = self.entries.get(oid)
-        if e is None or e.obj != key[0] or key[2] != self.view.render_scale() or e.pix is None:
+        if (e is None or e.obj != key[0] or key[2] != self.view.render_scale() or e.pix is None or
+                key[3] != self._context(e.obj,e.page)):
             return  # stale: the object or zoom changed while rendering
         w, h, rgba = bitmap
         dpr = self.view.dpr()
@@ -265,6 +314,8 @@ class EditOverlay:
             e.pix.setPixmap(pm)
             e.pix_logical_w = w / dpr
             e.rendered = key[0]
+            e.scale_key = key[2]
+            e.context_key = key[3]
             self._layout(e)
         except RuntimeError:
             pass

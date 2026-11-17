@@ -2,7 +2,7 @@
 builds verified edit plans (heavy; safe to run on a worker thread) and commits them (GUI thread)."""
 from __future__ import annotations
 import io
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 import pikepdf
 import pypdfium2 as pdfium
@@ -29,11 +29,14 @@ class TextStyle:
     color: tuple[float, float, float] = (0.0, 0.0, 0.0)
     align: str = "left"
     line_spacing: float = 1.2
+    char_spacing: float = 0.0
+    horizontal_scale: float = 100.0
 
 
 def default_style(run: pe.TextRun) -> TextStyle:
     fam, bold, italic = guess_family(run.font_name)
-    return TextStyle(fam, round(run.font_size, 2), bold, italic, tuple(round(c, 3) for c in run.color))
+    return TextStyle(fam, round(run.font_size, 2), bold, italic, tuple(round(c, 3) for c in run.color),
+                     char_spacing=run.char_spacing,horizontal_scale=run.horizontal_scale)
 
 
 @dataclass
@@ -60,7 +63,19 @@ class EditSession:
     def __init__(self, doc: PdfDocument, catalog: FontCatalog | None = None):
         self.doc = doc
         self.catalog = catalog or default_catalog()
+        from .fonts import import_embedded_fonts
+        import_embedded_fonts(self.catalog,doc.pdf)
         self.layer = EditLayer()
+        for objects in doc.restored_edits.values():
+            for obj in objects:
+                self.layer.add(obj)
+        # Older state stored page consent on a single block. Normalize it across that page
+        # without treating permission migration as an image/text edit.
+        for key in doc.page_keys():
+            if self.page_raster_allowed(key):
+                for obj in self.layer.on_page(key):
+                    if isinstance(obj,TextBox) and obj.ocr_source is not None and not obj.ocr_allow_page_raster:
+                        self.layer.replace(replace(obj,ocr_allow_page_raster=True))
         self.stack = UndoStack(self._on_change)
         self.listeners: list[Callable[[ChangeEvent], None]] = []
         self._unsaved_new = doc.path is None   # a never-saved document stays modified even at the clean index
@@ -89,16 +104,65 @@ class EditSession:
 
     # ---------------------------------------------------------------- layer objects
     def add_object(self, obj: EditObject, text: str | None = None) -> None:
+        if isinstance(obj,TextBox) and obj.ocr_source is not None and self.page_raster_allowed(obj.page_key):
+            obj=replace(obj,ocr_allow_page_raster=True)
         self.push(C.AddObject(self, obj, text))
 
     def remove_object(self, oid: str) -> None:
+        obj = self.layer.get(oid)
+        if isinstance(obj, TextBox) and obj.ocr_source is not None:
+            from dataclasses import replace
+            self.update_object(replace(obj, text=""), "Erase OCR text")
+            return
         self.push(C.RemoveObject(self, oid))
 
     def update_object(self, after: EditObject, text: str = "Edit object", merge: str | None = None) -> None:
         before = self.layer.get(after.id)
         if before is None or before == after:
             return
+        if isinstance(after, TextBox) and after.ocr_source is not None:
+            visual_fields=("text","family","size","bold","italic","color","align","line_spacing",
+                           "opacity","rotation","x0","y0","x1","y1","char_spacing","horizontal_scale")
+            if any(getattr(before,name)!=getattr(after,name) for name in visual_fields):
+                after = replace(after, ocr_original=None)
         self.push(C.UpdateObject(self, before, after, text, merge))
+
+    def page_raster_allowed(self,key) -> bool:
+        return any(isinstance(obj,TextBox) and obj.ocr_source is not None and obj.ocr_allow_page_raster
+                   for obj in self.layer.on_page(key))
+
+    def set_page_raster_permission(self,key,allowed: bool) -> None:
+        commands=[]
+        for obj in self.layer.on_page(key):
+            if isinstance(obj,TextBox) and obj.ocr_source is not None and obj.ocr_allow_page_raster!=allowed:
+                commands.append(C.UpdateObject(self,obj,replace(obj,ocr_allow_page_raster=allowed),
+                                               "Allow page rasterization" if allowed else "Disallow page rasterization"))
+        if commands:
+            self.push(MacroCommand("Allow page rasterization" if allowed else "Disallow page rasterization",commands))
+
+    def split_ocr_block(self,oid,position):
+        from .ocr_blocks import split_block
+        before=self.layer.get(oid)
+        children=split_block(before,position)
+        index=self.layer.all().index(before)
+        self.push(MacroCommand("Split OCR block",[C.RemoveObject(self,oid)]+[
+            C.AddObject(self,obj,index=index+n) for n,obj in enumerate(children)]))
+        return children
+
+    def merge_ocr_blocks(self,first_id,second_id):
+        from .ocr_blocks import merge_blocks
+        first,second=self.layer.get(first_id),self.layer.get(second_id)
+        merged=merge_blocks(first,second)
+        a,b=sorted((first,second),key=lambda obj:obj.x0)
+        for other in self.layer.on_page(first.page_key):
+            if isinstance(other,TextBox) and other.id not in (first_id,second_id) and other.ocr_source is not None:
+                if (a.x1<=other.x0 and other.x1<=b.x0 and
+                        min(a.ocr_source[3],other.ocr_source[3])>max(a.ocr_source[1],other.ocr_source[1])):
+                    raise ValueError("Choose adjacent OCR blocks; another block lies between these two.")
+        index=min(self.layer.all().index(first),self.layer.all().index(second))
+        self.push(MacroCommand("Merge OCR blocks",[C.RemoveObject(self,first_id),C.RemoveObject(self,second_id),
+                                                  C.AddObject(self,merged,index=index)]))
+        return merged
 
     def layer_by_page_index(self) -> dict[int, list[EditObject]]:
         out: dict[int, list[EditObject]] = {}
@@ -185,6 +249,35 @@ class EditSession:
         if run.skewed or abs(((run.rotation + 180) % 360) - 180) > 0.5:
             raise EditRefused("Rotated or skewed text can only be edited in place (standard fonts, unchanged "
                               "style). Remove-and-replace for rotated text is not supported.")
+        spacing = style.char_spacing
+        if not style_changed:
+            # Compare the native line's actual appearance when original font reuse is unavailable.
+            from .font_match import match_font
+            pdoc = pdfium.PdfDocument(data)
+            try:
+                page = pdoc[i]
+                try:
+                    page.set_rotation(0)
+                    bitmap = page.render(scale=3)
+                    try: image = bitmap.to_pil().convert("RGB").copy()
+                    finally: bitmap.close()
+                    from .geometry import PageTransform
+                    tr = PageTransform(tuple(page.get_bbox()),0,image.width,image.height)
+                    x,y,w,h = tr.rect_to_px(run.bbox)
+                    sample = image.crop((int(x),int(y),int(x+w+1),int(y+h+1)))
+                    matched = match_font(sample,run.text,3,self.catalog)
+                finally: page.close()
+            finally: pdoc.close()
+            requested = self.catalog.find(run.font_name,style.bold,style.italic)
+            from .fonts import covers
+            if requested is not None and not covers(requested,new_text):
+                from dataclasses import replace
+                style = replace(style,family=requested.family)
+            elif matched:
+                from dataclasses import replace
+                style = replace(style,family=matched.family,bold=matched.bold,italic=matched.italic)
+                spacing = style.char_spacing if run.spacing_known else matched.char_spacing
+                plan.notes.append(f"Local visual font match: {matched.family}; approximate, not exact identification.")
         face, missing, note = self.catalog.resolve(style.family, style.bold, style.italic, new_text)
         if face is None:
             raise EditRefused("No usable font is installed for the replacement text.")
@@ -202,9 +295,13 @@ class EditSession:
         x1 = max(x0 + w + 1.0, run.bbox[2]) if style.align != "left" else x0 + w + 1.0
         box = TextBox(key, x0, y1 - h, x1, y1, new_text, face.family, style.size, style.bold, style.italic,
                       style.color, style.align, style.line_spacing, origin="replacement")
+        from dataclasses import replace
+        box = replace(box,char_spacing=spacing,horizontal_scale=style.horizontal_scale)
         self._width_warning(plan, run, new_text, style, w)
-        plan.warnings.append(f"The original font '{run.font_name}' is not reused; '{face.family}' is embedded "
-                             "instead, so letter shapes and spacing can differ slightly.")
+        if face.family == run.font_name:
+            plan.notes.append("The original embedded TrueType program is reused after Unicode coverage and embedding-permission checks.")
+        else:
+            plan.warnings.append(f"The original font is not reused. Closest available font '{face.family}' substitutes '{run.font_name}'; glyph shapes and spacing may differ.")
         plan.notes.append("The old text object is removed from the page content (not covered); the "
                           "replacement is real text in an embedded font.")
         plan.build = lambda: [C.ContentSwap(self, key, out, "Edit text"), C.AddObject(self, box, "Edit text")]

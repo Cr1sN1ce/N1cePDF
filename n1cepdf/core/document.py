@@ -21,6 +21,7 @@ class PdfDocument:
         self.path = path
         self._password = password  # memory only; never logged or persisted
         self.modified = False
+        self.restored_edits = {}
         self.revision = 0  # bumped on every mutation; renderers key on it
 
     @classmethod
@@ -38,7 +39,14 @@ class PdfDocument:
         if len(pdf.pages) > MAX_PAGES:
             pdf.close()
             raise InvalidPdfError("Document exceeds the page limit.")
-        return cls(pdf, p, password)
+        doc = cls(pdf, p, password)
+        try:
+            from ..edit.ocr_state import restore_pages
+            doc.restored_edits = restore_pages(pdf)
+        except (ValueError, KeyError, TypeError, AttributeError, pikepdf.PdfError) as exc:
+            pdf.close()
+            raise InvalidPdfError(f"Invalid N1cePDF OCR edit state: {exc}") from exc
+        return doc
 
     @classmethod
     def from_pikepdf(cls, pdf: pikepdf.Pdf) -> "PdfDocument":

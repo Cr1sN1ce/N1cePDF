@@ -1,4 +1,4 @@
-# N1cePDF 1.0.0 — release checklist
+# N1cePDF 1.1.0 — release checklist
 
 Run on a **clean Windows 10 or 11 x64 machine or VM** (ideally one that has never had Python or N1cePDF installed;
 take a snapshot first). Record the result of each line; any ✗ blocks the release.
@@ -9,7 +9,7 @@ Legend: **[A]** is also covered by an automated script (`packaging\smoke-test.ps
 
 ## 0. Before you start
 - [ ] `build-windows.bat` finished with **BUILD SUCCEEDED** and all tests passed (no `-SkipTests`).
-- [ ] `release\N1cePDF-Setup-1.0.0-x64.exe` exists; its SHA-256 matches `release\...exe.sha256`.
+- [ ] `release\N1cePDF-Setup-1.1.0-x64.exe` exists; its SHA-256 matches `release\...exe.sha256`.
 - [ ] Publisher set (`-Publisher`), `LICENSE` is final text, PDFium licence added to `THIRD_PARTY_NOTICES.md`.
 - [ ] Test files prepared: a normal multi-page PDF, one with images, an encrypted one, a ≥1000-page one, and
       files named `договор №1.pdf`, `Țară și România.pdf` and `my report (final) v2.pdf`, stored in folders whose
@@ -29,14 +29,14 @@ Legend: **[A]** is also covered by an automated script (`packaging\smoke-test.ps
 | 1.9 | **Start Menu shortcut disabled** (untick it, install) | No Start Menu entry. Both unticked → neither shortcut. | |
 | 1.10 | Last page | ☑ "Launch N1cePDF" ticked by default; finishing launches the app. Untick it → app does not launch. | |
 | 1.11 | Re-run the installer over the existing install | Upgrades cleanly in the same folder; shortcuts still correct; no duplicate Installed-apps entry. | |
-| 1.12 | Silent install `N1cePDF-Setup-1.0.0-x64.exe /VERYSILENT /CURRENTUSER` | Installs without UI; app is **not** launched. **[A]** | |
+| 1.12 | Silent install `N1cePDF-Setup-1.1.0-x64.exe /VERYSILENT /CURRENTUSER` | Installs without UI; app is **not** launched. **[A]** | |
 
 ## 2. First launch and identity
 | # | Check | Expected | ✓/✗ |
 |---|---|---|---|
 | 2.1 | Launch from the Start Menu / desktop shortcut | Window opens in a few seconds; **no console/terminal window** at any time. **[A]** (GUI subsystem check) | |
 | 2.2 | Icons | N1cePDF icon on: window title bar, taskbar button, desktop shortcut, Start Menu entry, `N1cePDF.exe` in Explorer, installer file, Installed apps entry. Pin to taskbar → the pinned icon and the running window share one button. | |
-| 2.3 | Explorer → `N1cePDF.exe` → Properties → Details | Product name N1cePDF, version 1.0.0.0. | |
+| 2.3 | Explorer → `N1cePDF.exe` → Properties → Details | Product name N1cePDF, version 1.1.0.0. | |
 | 2.4 | Welcome screen | Logo, Open PDF, Create Blank PDF, recent list (empty). | |
 | 2.5 | **Installation without Python** | On a machine with no Python installed (or with Python removed from PATH) the app starts and every check below passes. **[A]** partial: smoke test strips Python from PATH/`PYTHON*`. | |
 | 2.6 | **Offline usage** | Disconnect network / enable airplane mode; reboot optional; run sections 3–5. Nothing prompts for or needs a connection. (Optional: Resource Monitor → Network shows no N1cePDF activity.) | |
@@ -72,13 +72,13 @@ Legend: **[A]** is also covered by an automated script (`packaging\smoke-test.ps
 | 4.2 | Install **with** the task | Right-click a PDF → Open with → **N1cePDF** is listed (may need "Choose another app" the first time); N1cePDF appears in Settings → Apps → Default apps (search "N1cePDF"/.pdf). | |
 | 4.3 | Open with → N1cePDF on a file with spaces, Cyrillic and Romanian characters in its path | Opens that file in N1cePDF. | |
 | 4.4 | Default app untouched | Your existing default PDF application is unchanged after install (check Settings → Default apps → .pdf). Setting N1cePDF as default yourself works and double-click opens files in N1cePDF. | |
-| 4.5 | Select 3 PDFs → Enter / Open with | Each opens (one window per file in 1.0.0 — documented limitation). | |
+| 4.5 | Select 3 PDFs → Enter / Open with | Each opens (one window per file in 1.1.0 — documented limitation). | |
 | 4.6 | Command line: `"<install>\N1cePDF.exe" "C:\path with spaces\документ.pdf"` | Opens the file. A non-existent path gives an error dialog, not a crash. | |
 
 ## 5. Uninstallation
 | # | Check | Expected | ✓/✗ |
 |---|---|---|---|
-| 5.1 | Settings → Apps → Installed apps | **N1cePDF**, version 1.0.0, correct publisher, N1cePDF icon. | |
+| 5.1 | Settings → Apps → Installed apps | **N1cePDF**, version 1.1.0, correct publisher, N1cePDF icon. | |
 | 5.2 | Uninstall (leave the app running first) | Installer offers to close the running app; completes. | |
 | 5.3 | Prompt "Also delete your N1cePDF settings … ?" | Default button is **No**; choosing No keeps `%APPDATA%\N1cePDF` and `%LOCALAPPDATA%\N1cePDF`; choosing Yes removes both. Silent uninstall never deletes them. | |
 | 5.4 | After uninstall | Install folder gone (or empty), desktop and Start Menu shortcuts gone, `HKCU\Software\Classes\N1cePDF.Document`, `HKCU\Software\N1cePDF` and the `RegisteredApplications` value gone, no services/scheduled tasks ever created. **[A]** (files + shortcuts) | |
@@ -86,10 +86,24 @@ Legend: **[A]** is also covered by an automated script (`packaging\smoke-test.ps
 | 5.6 | Reinstall after uninstall | Works; recent list present only if you kept settings. | |
 
 ## 6. Optional end-to-end automation (current-user install, then removed)
-    powershell -ExecutionPolicy Bypass -File packaging\installer-test.ps1 -Installer release\N1cePDF-Setup-1.0.0-x64.exe
+    powershell -ExecutionPolicy Bypass -File packaging\installer-test.ps1 -Installer release\N1cePDF-Setup-1.1.0-x64.exe
 Must end with **INSTALLER TEST PASSED**. It covers 1.4, 1.6, 1.8, 1.12, 2.7, 4.1, 5.4 (files/shortcuts), 5.5 only.
 
 ## 7. Sign-off
 - [ ] All lines ✓ (list any waived item and why): ______________________________________
 - [ ] Installer SHA-256 recorded and published next to the download.
-- [ ] Known limitations (`docs/known-limitations.md`) reviewed and acceptable for 1.0.0.
+- [ ] Known limitations (`docs/known-limitations.md`) reviewed and acceptable for 1.1.0.
+
+## OCR release verification
+
+- [ ] Without Tesseract, normal PDF features work and OCR reports installation instructions.
+- [ ] Windows PATH and N1CEPDF_TESSERACT discovery work, including paths with spaces/Unicode.
+- [ ] eng/rus/ron recognition and missing-language diagnostics work offline.
+- [ ] Scanned/mixed/rotated/cropped multipage PDFs: coordinates, progress and cancellation.
+- [ ] Edit/move/resize an OCR block, save, reopen, rerun OCR; new text is in image pixels, no visible OCR text layer.
+- [ ] Verify local background colour, inpainting/page-rasterization consent and source image resolution; do not describe this as redaction.
+- [ ] Repeat on Fedora desktop and Windows 10/11; installers do not bundle Tesseract.
+
+- [ ] Labels/counters split independently; right edge stays fixed; neighbour/gutter pixels remain unchanged.
+- [ ] Manual split/merge Undo/Redo and legacy resegmentation checkbox; words survive save/reopen.
+- [ ] HiDPI preview at several zooms matches saved raster; no cached-text bitmap fitting.
